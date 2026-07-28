@@ -1,6 +1,7 @@
 // Copyright © 2023-2024 Apple Inc.
 
 #include <atomic>
+#include <cstdio>
 #include <cstdlib>
 #include <map>
 #include <sstream>
@@ -92,6 +93,13 @@ Compiled::Compiled(
       is_constant_([this](size_t i) {
         return constant_ids_.find(inputs_[i].id()) != constant_ids_.end();
       }) {
+  fprintf(
+      stderr,
+      "MLX_DEBUG_3932 Compiled::Compiled this=%p tape_size=%zu inputs_size=%zu outputs_size=%zu\n",
+      (void*)this,
+      tape_.size(),
+      inputs_.size(),
+      outputs_.size());
   // Build the kernel name.
   NodeNamer namer;
   std::ostringstream os;
@@ -182,6 +190,10 @@ bool Compiled::is_equivalent(const Primitive& other) const {
         auto& p2 = a2.primitive();
         return typeid(p1) == typeid(p2) && p1.is_equivalent(p2);
       });
+}
+
+Compiled::~Compiled() {
+  fprintf(stderr, "MLX_DEBUG_3932 Compiled::~Compiled this=%p\n", (void*)this);
 }
 
 const char* Compiled::name() const {
@@ -368,7 +380,13 @@ class CompilerCache {
   }
 
   void erase(std::uintptr_t fun_id) {
+    fprintf(
+        stderr,
+        "MLX_DEBUG_3932 CompilerCache::erase BEGIN fun_id=%zu found=%d\n",
+        fun_id,
+        (int)cache_.count(fun_id));
     cache_.erase(fun_id);
+    fprintf(stderr, "MLX_DEBUG_3932 CompilerCache::erase END fun_id=%zu\n", fun_id);
   }
 
   void clear() {

@@ -1,4 +1,5 @@
 // Copyright © 2023-2024 Apple Inc.
+#include <cstdio>
 #include <functional>
 #include <unordered_map>
 
@@ -231,6 +232,14 @@ array::~array() {
         break;
       }
     }
+    fprintf(
+        stderr,
+        "MLX_DEBUG_3932 ~array() this=%p prim=%s n_siblings=%zu self_use_count=%ld do_detach=%d\n",
+        (void*)array_desc_.get(),
+        primitive().name(),
+        n,
+        (long)array_desc_.use_count(),
+        (int)do_detach);
     if (do_detach) {
       for (auto& s : siblings()) {
         for (auto& ss : s.siblings()) {
@@ -312,6 +321,14 @@ array::ArrayDesc::~ArrayDesc() {
         is_deletable &=
             s.array_desc_.use_count() <= a.siblings().size() + is_input;
       }
+      fprintf(
+          stderr,
+          "MLX_DEBUG_3932 ArrayDesc::~ArrayDesc append_deletable_inputs candidate=%p prim=%s n_siblings=%zu use_count=%ld is_deletable=%d\n",
+          (void*)a.array_desc_.get(),
+          a.has_primitive() ? a.primitive().name() : "<none>",
+          a.siblings().size(),
+          (long)a.array_desc_.use_count(),
+          (int)is_deletable);
       if (is_deletable) {
         for_deletion.push_back(std::move(a.array_desc_));
       }
