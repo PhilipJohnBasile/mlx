@@ -532,6 +532,29 @@ std::pair<std::vector<array>, ParentsMap> compile_dfs(
       }
     }
   }
+
+  // Every node that was replaced by a copy above is now unreachable: the new
+  // tape, the rewired outputs and the remapped parents map all refer to the
+  // copies. Single-output orphans are freed by reference counting, but a
+  // multi-output orphan cannot be: each output of a multi-output primitive
+  // holds its siblings in ArrayDesc::siblings, so the sibling group refers to
+  // itself and its use counts never reach zero. array::~array() breaks that
+  // cycle, but only when the group's last external array wrapper is
+  // destroyed while nothing else refers to it, which never happens here (the
+  // references go away through assignment and through vector destruction
+  // while the parents map still holds copies). The group then keeps its whole
+  // input cone alive - including any arrays captured by the compiled
+  // function - for the lifetime of the process. Detach the orphans instead.
+  for (auto& arr : tape) {
+    if (arr.siblings().empty()) {
+      continue;
+    }
+    if (auto it = old_to_new.find(arr.id());
+        it != old_to_new.end() && it->second.id() != arr.id()) {
+      arr.detach();
+    }
+  }
+
   tape = std::move(new_tape);
 
   std::unordered_map<std::uintptr_t, std::vector<std::pair<array, int>>>
