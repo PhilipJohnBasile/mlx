@@ -644,8 +644,6 @@ class MLX_API Compiled : public Primitive {
       std::vector<array> tape,
       std::unordered_set<uintptr_t> constant_ids);
 
-  ~Compiled(); // MLX_DEBUG_3932
-
   void eval_cpu(const std::vector<array>& inputs, std::vector<array>& outputs)
       override;
   void eval_gpu(const std::vector<array>& inputs, std::vector<array>& outputs)

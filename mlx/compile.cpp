@@ -1,7 +1,6 @@
 // Copyright © 2023-2024 Apple Inc.
 
 #include <atomic>
-#include <cstdio>
 #include <cstdlib>
 #include <map>
 #include <sstream>
@@ -93,13 +92,6 @@ Compiled::Compiled(
       is_constant_([this](size_t i) {
         return constant_ids_.find(inputs_[i].id()) != constant_ids_.end();
       }) {
-  fprintf(
-      stderr,
-      "MLX_DEBUG_3932 Compiled::Compiled this=%p tape_size=%zu inputs_size=%zu outputs_size=%zu\n",
-      (void*)this,
-      tape_.size(),
-      inputs_.size(),
-      outputs_.size());
   // Build the kernel name.
   NodeNamer namer;
   std::ostringstream os;
@@ -190,10 +182,6 @@ bool Compiled::is_equivalent(const Primitive& other) const {
         auto& p2 = a2.primitive();
         return typeid(p1) == typeid(p2) && p1.is_equivalent(p2);
       });
-}
-
-Compiled::~Compiled() {
-  fprintf(stderr, "MLX_DEBUG_3932 Compiled::~Compiled this=%p\n", (void*)this);
 }
 
 const char* Compiled::name() const {
@@ -380,13 +368,7 @@ class CompilerCache {
   }
 
   void erase(std::uintptr_t fun_id) {
-    fprintf(
-        stderr,
-        "MLX_DEBUG_3932 CompilerCache::erase BEGIN fun_id=%zu found=%d\n",
-        fun_id,
-        (int)cache_.count(fun_id));
     cache_.erase(fun_id);
-    fprintf(stderr, "MLX_DEBUG_3932 CompilerCache::erase END fun_id=%zu\n", fun_id);
   }
 
   void clear() {
@@ -550,6 +532,29 @@ std::pair<std::vector<array>, ParentsMap> compile_dfs(
       }
     }
   }
+
+  // Every node that was replaced by a copy above is now unreachable: the new
+  // tape, the rewired outputs and the remapped parents map all refer to the
+  // copies. Single-output orphans are freed by reference counting, but a
+  // multi-output orphan cannot be: each output of a multi-output primitive
+  // holds its siblings in ArrayDesc::siblings, so the sibling group refers to
+  // itself and its use counts never reach zero. array::~array() breaks that
+  // cycle, but only when the group's last external array wrapper is
+  // destroyed while nothing else refers to it, which never happens here (the
+  // references go away through assignment and through vector destruction
+  // while the parents map still holds copies). The group then keeps its whole
+  // input cone alive - including any arrays captured by the compiled
+  // function - for the lifetime of the process. Detach the orphans instead.
+  for (auto& arr : tape) {
+    if (arr.siblings().empty()) {
+      continue;
+    }
+    if (auto it = old_to_new.find(arr.id());
+        it != old_to_new.end() && it->second.id() != arr.id()) {
+      arr.detach();
+    }
+  }
+
   tape = std::move(new_tape);
 
   std::unordered_map<std::uintptr_t, std::vector<std::pair<array, int>>>

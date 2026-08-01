@@ -875,3 +875,48 @@ TEST_CASE("test compile throwing first trace does not poison cache") {
   REQUIRE_EQ(out.size(), 1);
   CHECK_EQ(out[0].item<float>(), 3.0f);
 }
+
+// https://github.com/ml-explore/mlx/issues/3932
+//
+// compile_dfs deep-copies the traced graph and leaves the originals to be
+// freed by reference counting. A multi-output original cannot be: each output
+// holds its siblings in ArrayDesc::siblings, so the group refers to itself.
+// array::~array() breaks that cycle, but the rewiring goes through
+// array::operator=, which does not, so the orphaned group survives and keeps
+// its whole input cone -- including anything the compiled function captured --
+// alive for the lifetime of the process.
+//
+// Deliberately not an RSS or get_active_memory assertion: #3621 removed a
+// flaky memory-based test in favour of a weak_ptr probe, which is exact.
+TEST_CASE("test compile does not orphan multi-output trace nodes") {
+  std::weak_ptr<array::Data> tracker;
+  {
+    // The captured array is what the orphaned sibling group pins.
+    auto w = array({1.0f, 2.0f, 3.0f, 4.0f});
+    eval(w);
+    tracker = w.data_shared_ptr();
+
+    auto fun = [w](const std::vector<array>& inputs) {
+      // The captured array must be UPSTREAM of the multi-output node: the
+      // orphaned sibling group pins its own input cone, so `w` only stays
+      // alive if it feeds into split rather than being combined after it.
+      auto h = multiply(inputs[0], w);
+      // split() is multi-output and neither output is a graph output, so both
+      // get replaced by copies during the trace and the originals orphan.
+      auto parts = split(h, 2);
+      return std::vector<array>{add(parts[0], parts[1])};
+    };
+
+    {
+      auto cfun = compile(fun);
+      auto out = cfun({array({1.0f, 2.0f, 3.0f, 4.0f})})[0];
+      eval(out);
+      // [1,2,3,4]*[1,2,3,4] = [1,4,9,16]; split -> [1,4] and [9,16];
+      // summed -> [10,20].
+      CHECK(array_equal(out, array({10.0f, 20.0f})).item<bool>());
+    }
+    // cfun is gone, so the cache entry has been erased; `w` leaves scope with
+    // the enclosing block. Nothing legitimate refers to the buffer after this.
+  }
+  CHECK(tracker.expired());
+}
