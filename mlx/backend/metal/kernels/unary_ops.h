@@ -12,6 +12,49 @@
 
 namespace {
 constant float inf = metal::numeric_limits<float>::infinity();
+
+float complex_abs(complex64_t x) {
+  float ar = metal::abs(x.real);
+  float ai = metal::abs(x.imag);
+
+  if (metal::isinf(ar) || metal::isinf(ai)) {
+    return inf;
+  }
+  if (metal::isnan(ar) || metal::isnan(ai)) {
+    return ar + ai;
+  }
+
+  float hi = ar > ai ? ar : ai;
+  float lo = ar > ai ? ai : ar;
+  if (hi == 0.0f) {
+    return 0.0f;
+  }
+
+  float q = lo / hi;
+  return hi * metal::precise::sqrt(1.0f + q * q);
+}
+
+float complex_log_abs(complex64_t x) {
+  float ar = metal::abs(x.real);
+  float ai = metal::abs(x.imag);
+
+  if (metal::isinf(ar) || metal::isinf(ai)) {
+    return inf;
+  }
+  if (metal::isnan(ar) || metal::isnan(ai)) {
+    return ar + ai;
+  }
+
+  float hi = ar > ai ? ar : ai;
+  float lo = ar > ai ? ai : ar;
+  if (hi == 0.0f) {
+    return metal::precise::log(0.0f);
+  }
+
+  float q = lo / hi;
+  return metal::precise::log(hi) +
+      0.5f * metal::precise::log(1.0f + q * q);
+}
 }
 
 struct Abs {
@@ -35,7 +78,7 @@ struct Abs {
     return x;
   };
   complex64_t operator()(complex64_t x) thread {
-    return {metal::precise::sqrt(x.real * x.real + x.imag * x.imag), 0};
+    return {complex_abs(x), 0};
   };
 };
 
@@ -238,7 +281,7 @@ struct Log {
   };
 
   complex64_t operator()(complex64_t x) thread {
-    auto r = metal::precise::log(Abs{}(x).real);
+    auto r = complex_log_abs(x);
     auto i = metal::precise::atan2(x.imag, x.real);
     return {r, i};
   };
@@ -346,8 +389,8 @@ struct Sin {
 struct Sinh {
   template <typename T>
   T operator()(T x) thread {
-    return metal::precise::sinh(x);
-  };
+    return metal::precise::sinh(x.real) * metal::precise::cos(x.imag);
+  }
 
   complex64_t operator()(complex64_t x) thread {
     return {
@@ -367,17 +410,43 @@ struct Sqrt {
   template <typename T>
   T operator()(T x) thread {
     return metal::precise::sqrt(x);
-  };
+  }
 
   complex64_t operator()(complex64_t x) thread {
-    if (x.real == 0.0 && x.imag == 0.0) {
-      return {0.0, 0.0};
+    if (x.real == 0.0f && x.imag == 0.0f) {
+      return {0.0f, 0.0f};
     }
-    auto r = Abs{}(x).real;
-    auto a = metal::precise::sqrt((r + x.real) / 2.0);
-    auto b_abs = metal::precise::sqrt((r - x.real) / 2.0);
-    auto b = metal::copysign(b_abs, x.imag);
-    return {a, b};
+
+    float ar = metal::abs(x.real);
+    float ai = metal::abs(x.imag);
+
+    if (metal::isinf(ai)) {
+      return {inf, metal::copysign(inf, x.imag)};
+    }
+    if (metal::isinf(ar)) {
+      if (x.real > 0.0f) {
+        return {inf, metal::copysign(0.0f, x.imag)};
+      }
+      return {0.0f, metal::copysign(inf, x.imag)};
+    }
+
+    float scale = ar > ai ? ar : ai;
+    float lo = ar > ai ? ai : ar;
+    float q = lo / scale;
+    float h = metal::precise::sqrt(1.0f + q * q);
+    float root_scale = metal::precise::sqrt(scale);
+
+    if (x.real >= 0.0f) {
+      float a = root_scale *
+          metal::precise::sqrt(0.5f * (h + x.real / scale));
+      float b = x.imag / (2.0f * a);
+      return {a, b};
+    }
+
+    float b_abs = root_scale *
+        metal::precise::sqrt(0.5f * (h - x.real / scale));
+    float a = ai / (2.0f * b_abs);
+    return {a, metal::copysign(b_abs, x.imag)};
   }
 };
 
@@ -385,7 +454,7 @@ struct Rsqrt {
   template <typename T>
   T operator()(T x) thread {
     return metal::precise::rsqrt(x);
-  };
+  }
 
   complex64_t operator()(complex64_t x) thread {
     return 1.0 / Sqrt{}(x);
