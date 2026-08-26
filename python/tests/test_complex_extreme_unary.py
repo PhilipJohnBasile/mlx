@@ -1,5 +1,3 @@
-# Copyright © 2026 Apple Inc.
-
 import unittest
 
 import mlx.core as mx
@@ -19,7 +17,7 @@ class TestComplexExtremeUnary(mlx_tests.MLXTestCase):
             dtype=np.complex64,
         )
         expected = np.abs(values)
-        actual = np.array(mx.abs(mx.array(values, stream=mx.gpu)))
+        actual = np.array(mx.abs(mx.array(values), stream=mx.gpu))
         self.assertTrue(np.allclose(actual, expected, rtol=2e-6, atol=0.0))
 
     def test_complex64_sqrt_extreme_range(self):
@@ -33,7 +31,7 @@ class TestComplexExtremeUnary(mlx_tests.MLXTestCase):
             dtype=np.complex64,
         )
         expected = np.sqrt(values)
-        actual = np.array(mx.sqrt(mx.array(values, stream=mx.gpu)))
+        actual = np.array(mx.sqrt(mx.array(values), stream=mx.gpu))
         self.assertTrue(np.allclose(actual, expected, rtol=3e-6, atol=0.0))
 
     def test_complex64_log_extreme_range(self):
@@ -47,7 +45,7 @@ class TestComplexExtremeUnary(mlx_tests.MLXTestCase):
             dtype=np.complex64,
         )
         expected = np.log(values)
-        actual = np.array(mx.log(mx.array(values, stream=mx.gpu)))
+        actual = np.array(mx.log(mx.array(values), stream=mx.gpu))
         self.assertTrue(np.allclose(actual, expected, rtol=2e-6, atol=1e-6))
 
 
