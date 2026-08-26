@@ -1,0 +1,35 @@
+name: Temporary 4162 final CI
+
+on:
+  push:
+    branches:
+      - tmp/4162-final-ci
+
+permissions:
+  contents: read
+
+jobs:
+  fedora:
+    runs-on: ubuntu-22.04
+    container:
+      image: fedora:42
+    steps:
+      - uses: actions/checkout@v4
+      - name: Exact Fedora C++ build
+        run: bash ./.github/scripts/setup+build-cpp-linux-fedora-container.sh
+
+  sanitizer:
+    runs-on: ubuntu-22.04-arm
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [ASAN, UBSAN]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get update -y
+          sudo apt-get install -y build-essential libblas-dev liblapacke-dev libopenblas-dev cmake clang git
+      - name: Exact sanitizer build and tests
+        run: bash .github/scripts/build-sanitizer-tests.sh ${{ matrix.sanitizer }}
