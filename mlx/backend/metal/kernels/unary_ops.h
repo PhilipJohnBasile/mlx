@@ -389,7 +389,7 @@ struct Sin {
 struct Sinh {
   template <typename T>
   T operator()(T x) thread {
-    return metal::precise::sinh(x.real) * metal::precise::cos(x.imag);
+    return metal::precise::sinh(x);
   }
 
   complex64_t operator()(complex64_t x) thread {
@@ -513,7 +513,7 @@ struct ToFP8 {
   template <typename T>
   uint8_t operator()(T f) thread {
     return fp8_e4m3(f).bits;
-  }
+  };
 };
 
 struct FromFP8 {
