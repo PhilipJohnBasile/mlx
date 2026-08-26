@@ -462,7 +462,7 @@ mx::array mlx_get_item(const mx::array& src, const nb::object& obj) {
     return mlx_get_item_int(src, obj);
   } else if (nb::isinstance<nb::tuple>(obj)) {
     return mlx_get_item_nd(src, nb::cast<nb::tuple>(obj));
-  } else if (nb::isinstance<nb::ellipsis>(obj)) {
+  } else if (nb::ellipsis().is(obj)) {
     return src;
   } else if (obj.is_none()) {
     return expand_dims(src, 0);
@@ -778,7 +778,7 @@ mlx_compute_scatter_args(
     return mlx_scatter_args_int(src, obj, vals);
   } else if (nb::isinstance<nb::tuple>(obj)) {
     return mlx_scatter_args_nd(src, nb::cast<nb::tuple>(obj), vals);
-  } else if (nb::isinstance<nb::ellipsis>(obj)) {
+  } else if (nb::ellipsis().is(obj)) {
     return {{}, broadcast_to(vals, src.shape()), {}};
   } else if (obj.is_none()) {
     return {{}, broadcast_to(vals, src.shape()), {}};
