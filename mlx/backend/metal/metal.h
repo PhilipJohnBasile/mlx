@@ -27,4 +27,7 @@ MLX_API const
 MLX_API void set_metallib_path(const std::string& path);
 MLX_API const std::string& get_metallib_path();
 
+/* Release a dynamically compiled Metal library and its cached pipelines. */
+MLX_API void clear_library(const std::string& name);
+
 } // namespace mlx::core::metal

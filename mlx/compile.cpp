@@ -10,6 +10,7 @@
 
 #include "mlx/allocator.h"
 #include "mlx/backend/common/compiled.h"
+#include "mlx/backend/metal/metal.h"
 #include "mlx/compile.h"
 #include "mlx/compile_impl.h"
 #include "mlx/fast_primitives.h"
@@ -341,7 +342,26 @@ class CompileCache {
       std::unique_lock lock(mutex_);
       auto& ptr = cache_[fun_id];
       if (!ptr) {
-        ptr = std::make_shared<std::vector<CacheEntry>>();
+        ptr = std::shared_ptr<std::vector<CacheEntry>>(
+            new std::vector<CacheEntry>(), [](auto* entries) {
+              std::unordered_set<std::string> libraries;
+              for (const auto& entry : *entries) {
+                if (entry.stream.device != Device::gpu) {
+                  continue;
+                }
+                for (const auto& a : entry.tape) {
+                  if (a.has_primitive() &&
+                      typeid(a.primitive()) == typeid(Compiled)) {
+                    libraries.insert(
+                        static_cast<const Compiled&>(a.primitive()).lib_name());
+                  }
+                }
+              }
+              delete entries;
+              for (const auto& name : libraries) {
+                metal::clear_library(name);
+              }
+            });
       }
       return ptr;
     }();

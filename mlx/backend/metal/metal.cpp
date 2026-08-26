@@ -60,4 +60,8 @@ const std::string& get_metallib_path() {
   return g_metallib_path;
 }
 
+void clear_library(const std::string& name) {
+  device(mlx::core::Device::gpu).clear_library(name);
+}
+
 } // namespace mlx::core::metal
