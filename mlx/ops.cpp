@@ -4128,7 +4128,57 @@ array softmax(
 }
 
 array power(const array& a, const array& b, StreamOrDevice s /* = {} */) {
+  auto is_scalar_two = [&b]() {
+    if (b.ndim() != 0 || !b.is_available()) {
+      return false;
+    }
+    if (b.dtype() == uint8) {
+      return b.item<uint8_t>() == 2;
+    }
+    if (b.dtype() == uint16) {
+      return b.item<uint16_t>() == 2;
+    }
+    if (b.dtype() == uint32) {
+      return b.item<uint32_t>() == 2;
+    }
+    if (b.dtype() == uint64) {
+      return b.item<uint64_t>() == 2;
+    }
+    if (b.dtype() == int8) {
+      return b.item<int8_t>() == 2;
+    }
+    if (b.dtype() == int16) {
+      return b.item<int16_t>() == 2;
+    }
+    if (b.dtype() == int32) {
+      return b.item<int32_t>() == 2;
+    }
+    if (b.dtype() == int64) {
+      return b.item<int64_t>() == 2;
+    }
+    if (b.dtype() == float16) {
+      return static_cast<float>(b.item<float16_t>()) == 2.0f;
+    }
+    if (b.dtype() == float32) {
+      return b.item<float>() == 2.0f;
+    }
+    if (b.dtype() == float64) {
+      return b.item<double>() == 2.0;
+    }
+    if (b.dtype() == bfloat16) {
+      return static_cast<float>(b.item<bfloat16_t>()) == 2.0f;
+    }
+    if (b.dtype() == complex64) {
+      return b.item<complex64_t>() == complex64_t{2.0f, 0.0f};
+    }
+    return false;
+  };
+
   auto dtype = promote_types(a.dtype(), b.dtype());
+  if (is_scalar_two()) {
+    return square(astype(a, dtype, s), s);
+  }
+
   std::vector<array> inputs = {astype(a, dtype, s), astype(b, dtype, s)};
   if (a.shape() != b.shape()) {
     inputs = broadcast_arrays(inputs, s);
