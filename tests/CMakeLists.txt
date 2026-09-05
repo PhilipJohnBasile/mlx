@@ -27,6 +27,7 @@ target_sources(
           custom_vjp_tests.cpp
           creations_tests.cpp
           device_tests.cpp
+          distributed_reduction_tests.cpp
           einsum_tests.cpp
           export_import_tests.cpp
           eval_tests.cpp
@@ -39,6 +40,9 @@ target_sources(
           vmap_tests.cpp
           linalg_tests.cpp
           ${METAL_TEST_SOURCES})
+
+target_include_directories(
+  tests PRIVATE ${PROJECT_SOURCE_DIR}/mlx/distributed/jaccl/lib)
 
 target_link_libraries(tests PRIVATE mlx doctest)
 target_compile_options(tests PRIVATE ${SANITIZER_COMPILE_FLAGS})

@@ -13,11 +13,12 @@ struct SumOp {
   }
 };
 
+// Preserve NaNs from either operand so reduction order cannot drop them.
 template <typename T>
 struct MaxOp {
   void operator()(const T* input, T* output, size_t N) const {
     while (N-- > 0) {
-      *output = std::max(*output, *input);
+      *output = (*input != *input || *output < *input) ? *input : *output;
       input++;
       output++;
     }
@@ -28,7 +29,7 @@ template <typename T>
 struct MinOp {
   void operator()(const T* input, T* output, size_t N) const {
     while (N-- > 0) {
-      *output = std::min(*output, *input);
+      *output = (*input != *input || *output > *input) ? *input : *output;
       input++;
       output++;
     }
