@@ -43,6 +43,11 @@ jobs:
           source = yaml.safe_load(Path('.github/workflows/distributed-nan-validation.yml').read_text())
           steps = {s['name']: s['run'] for s in source['jobs']['validate']['steps'] if 'run' in s}
           generation = steps['Add regression tests without changing the implementation']
+          # Both libraries use the ARM float16 type. Define it globally before
+          # JACCL's namespaced include consumes the system header include guard.
+          anchor = '#include "doctest/doctest.h"'
+          assert generation.count(anchor) == 1
+          generation = generation.replace(anchor, '#if defined(__ARM_FEATURE_FP16_SCALAR_ARITHMETIC)\n#include <arm_fp16.h>\n#endif\n\n' + anchor)
           baseline = steps['Build baseline and prove regression tests fail']
           fixed = steps['Apply root cause fix and validate']
           assert "grep -q 'FAILED'" in baseline
