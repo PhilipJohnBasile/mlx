@@ -174,8 +174,16 @@ class RemoteProcess(CommandProcess):
         return script
 
 
+def _process_exit_code(returncode):
+    if returncode is None:
+        # A worker can fail before it records the command's exit status.
+        return 1
+    return returncode if returncode >= 0 else 128 - returncode
+
+
 def _launch_with_io(command_class, arguments, verbose):
     stop = False
+    exit_code = 0
     exit_codes = [(None, None)] * len(arguments)
 
     def _thread_fn(rank, *args, **kwargs):
@@ -271,14 +279,15 @@ def _launch_with_io(command_class, arguments, verbose):
         sys.stdout.buffer.flush()
         sys.stderr.buffer.flush()
 
-        # Check if all are running and terminate otherwise
-        if any(t.is_alive() for t in threads):
-            for i, t in enumerate(threads):
-                if not t.is_alive():
-                    if exit_codes[i][0] != 0:
-                        stop = True
-                        break
-        else:
+        # Keep the first observed failure before terminating the other ranks.
+        alive = [t.is_alive() for t in threads]
+        if not stop:
+            for running, (returncode, killed) in zip(alive, exit_codes):
+                if not running and (returncode != 0 or killed):
+                    exit_code = _process_exit_code(returncode) or 1
+                    stop = True
+                    break
+        if not any(alive):
             break
 
     # Wait for the jobs to finish
@@ -294,6 +303,7 @@ def _launch_with_io(command_class, arguments, verbose):
             sys.stderr.buffer.write(q.get())
     sys.stdout.buffer.flush()
     sys.stderr.buffer.flush()
+    return exit_code
 
 
 def launch_ring(parser, hosts, args, command):
@@ -321,7 +331,7 @@ def launch_ring(parser, hosts, args, command):
 
     log(args.verbose, "Running", shlex.join(command))
 
-    _launch_with_io(
+    return _launch_with_io(
         RemoteProcess,
         [
             ((rank, h.ssh_hostname, args.python, cwd, files, env, command), {})
@@ -349,7 +359,7 @@ def launch_nccl(parser, hosts, args, command):
 
     log(args.verbose, "Running", shlex.join(command))
 
-    _launch_with_io(
+    return _launch_with_io(
         RemoteProcess,
         [
             (
@@ -412,7 +422,7 @@ def launch_jaccl(parser, hosts, args, command):
 
     log(args.verbose, "Running", shlex.join(command))
 
-    _launch_with_io(
+    return _launch_with_io(
         RemoteProcess,
         [
             ((rank, h.ssh_hostname, args.python, cwd, files, env, command), {})
@@ -478,9 +488,9 @@ def launch_mpi(parser, hosts, args, command):
         ]
         log(args.verbose, "Running", " ".join(cmd))
         try:
-            run(cmd)
+            return _process_exit_code(run(cmd).returncode)
         except KeyboardInterrupt:
-            pass
+            return 130
 
 
 def main():
@@ -583,13 +593,13 @@ def main():
 
     # Launch
     if args.backend == "ring":
-        launch_ring(parser, hostfile.hosts, args, rest)
+        return launch_ring(parser, hostfile.hosts, args, rest)
     elif args.backend == "mpi":
-        launch_mpi(parser, hostfile.hosts, args, rest)
+        return launch_mpi(parser, hostfile.hosts, args, rest)
     elif args.backend == "nccl":
-        launch_nccl(parser, hostfile.hosts, args, rest)
+        return launch_nccl(parser, hostfile.hosts, args, rest)
     elif args.backend == "jaccl" or args.backend == "jaccl-ring":
-        launch_jaccl(parser, hostfile.hosts, args, rest)
+        return launch_jaccl(parser, hostfile.hosts, args, rest)
     else:
         parser.error(
             "The backend should be one of {'ring', 'mpi', 'nccl', 'jaccl', 'jaccl-ring'}"
