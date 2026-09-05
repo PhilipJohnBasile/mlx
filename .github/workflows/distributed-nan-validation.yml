@@ -33,7 +33,7 @@ jobs:
           fi
           python -m pip install cmake ninja pre-commit pyyaml
           c++ --version
-      - name: Recover the reviewed regression and patch scripts
+      - name: Recover the regression and vectorized patch scripts
         shell: bash
         run: |
           set -euo pipefail
@@ -43,11 +43,17 @@ jobs:
           source = yaml.safe_load(Path('.github/workflows/distributed-nan-validation.yml').read_text())
           steps = {s['name']: s['run'] for s in source['jobs']['validate']['steps'] if 'run' in s}
           generation = steps['Add regression tests without changing the implementation']
-          # Both libraries use the ARM float16 type. Define it globally before
-          # JACCL's namespaced include consumes the system header include guard.
           anchor = '#include "doctest/doctest.h"'
           assert generation.count(anchor) == 1
           generation = generation.replace(anchor, '#if defined(__ARM_FEATURE_FP16_SCALAR_ARITHMETIC)\n#include <arm_fp16.h>\n#endif\n\n' + anchor)
+          for old, new in [
+              ('(*input != *input || *output {symbol} *input)', '((*input != *input) | (*output {symbol} *input))'),
+              ('({left} != {left} || {left} {symbol} {right})', '(({left} != {left}) | ({left} {symbol} {right}))'),
+              ('// Preserve NaNs from either operand so reduction order cannot drop them.', '// Propagate NaNs from either operand; bitwise OR keeps selection vectorizable.'),
+              ('// Preserve NaNs from either operand in every reduction path, including BF16.', '// Propagate NaNs from either operand; bitwise OR keeps selection vectorizable.'),
+          ]:
+              assert generation.count(old) == 1, old
+              generation = generation.replace(old, new)
           baseline = steps['Build baseline and prove regression tests fail']
           fixed = steps['Apply root cause fix and validate']
           assert "grep -q 'FAILED'" in baseline
@@ -83,6 +89,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -92,15 +99,34 @@ jobs:
         with:
           pattern: nan-reduction-*
           path: validation-results
-      - name: Publish only the tested patch
+      - name: Identify whether the first validated candidate is present
+        id: candidate
+        run: |
+          if [ "$(git rev-parse HEAD)" = b6368984b8e02a3fb3ee7986846c0fb85e1fccf7 ]; then
+            echo 'present=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'present=true' >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/download-artifact@v4
+        if: steps.candidate.outputs.present == 'true'
+        with:
+          name: nan-reduction-ubuntu-24.04
+          run-id: 33936715880
+          github-token: ${{ github.token }}
+          path: previous-validation
+      - name: Publish only the tested patch without overwriting concurrent changes
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = b6368984b8e02a3fb3ee7986846c0fb85e1fccf7
+          base=b6368984b8e02a3fb3ee7986846c0fb85e1fccf7
           cmp validation-results/nan-reduction-macos-15/fix.patch validation-results/nan-reduction-ubuntu-24.04/fix.patch
+          if [ "$(git rev-parse HEAD)" != "$base" ]; then
+            git apply --reverse --index previous-validation/fix.patch
+            test "$(git write-tree)" = "$(git rev-parse "$base^{tree}")"
+          fi
           git apply --index validation-results/nan-reduction-macos-15/fix.patch
           git diff --cached --check
           git config user.name 'Philip John Basile'
           git config user.email '1419847+PhilipJohnBasile@users.noreply.github.com'
-          git commit -m 'Fix NaN propagation in ring and JACCL min/max reductions'
+          git commit -m 'Preserve NaNs in distributed min/max without disabling vectorization'
           git push origin HEAD:refs/heads/fix/distributed-minmax-nan
           git rev-parse HEAD
