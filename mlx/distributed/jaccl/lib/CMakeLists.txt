@@ -12,6 +12,15 @@ endif()
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+option(JACCL_BUILD_TESTS "Build JACCL unit tests" OFF)
+if(JACCL_BUILD_TESTS)
+  enable_testing()
+  add_executable(jaccl_timeout_tests tests/timeout_tests.cpp)
+  target_include_directories(jaccl_timeout_tests
+                             PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  add_test(NAME jaccl_timeout COMMAND jaccl_timeout_tests)
+endif()
+
 include(FetchContent)
 
 # nlohmann/json for device file parsing
@@ -59,6 +68,28 @@ target_include_directories(
   jaccl PRIVATE $<BUILD_INTERFACE:${json_SOURCE_DIR}/single_include/nlohmann>)
 
 target_compile_features(jaccl PUBLIC cxx_std_20)
+
+if(JACCL_BUILD_TESTS)
+  add_executable(jaccl_mesh_timeout_tests tests/mesh_timeout_tests.cpp)
+  target_link_libraries(jaccl_mesh_timeout_tests PRIVATE jaccl)
+  foreach(
+    case
+    recv
+    send
+    all_reduce
+    all_gather
+    sum_scatter
+    scatter_gather
+    drain
+    post_error
+    healthy
+    empty
+    single_rank
+    delayed)
+    add_test(NAME jaccl_mesh_${case} COMMAND jaccl_mesh_timeout_tests ${case})
+    set_tests_properties(jaccl_mesh_${case} PROPERTIES TIMEOUT 5)
+  endforeach()
+endif()
 
 # Install targets
 install(

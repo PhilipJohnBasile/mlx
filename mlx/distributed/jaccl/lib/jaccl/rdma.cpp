@@ -125,10 +125,20 @@ Connection::Connection(Connection&& c) : Connection(nullptr) {
   std::swap(src, c.src);
 }
 
-Connection::~Connection() {
+void Connection::close_queue_pair() noexcept {
   if (queue_pair != nullptr) {
-    ibv().destroy_qp(queue_pair);
+    int status = ibv().destroy_qp(queue_pair);
+    if (status == 0) {
+      queue_pair = nullptr;
+    } else {
+      std::cerr << "[jaccl] Failed to destroy queue pair: " << status
+                << std::endl;
+    }
   }
+}
+
+Connection::~Connection() {
+  close_queue_pair();
   if (completion_queue != nullptr) {
     ibv().destroy_cq(completion_queue);
   }

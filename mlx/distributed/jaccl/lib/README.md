@@ -103,6 +103,34 @@ variables:
 - **JACCL_RING** / **MLX_JACCL_RING**: (Optional) Prefer ring topology over
   mesh
 
+### Mesh peer-loss timeout
+
+Set `JACCL_TIMEOUT_MS` (or `MLX_JACCL_TIMEOUT_MS`) on **every rank**, before
+initializing the group, to bound the time a mesh operation can spend polling
+without receiving an RDMA completion. For example, `MLX_JACCL_TIMEOUT_MS=30000`
+sets a 30-second no-progress timeout. The JACCL-prefixed variable takes
+precedence. The value must be a nonnegative integer; unset or `0` preserves
+unbounded waiting for applications that deliberately pause ranks for long
+periods.
+
+The timeout covers mesh send, recv, reductions, all-gather, reduce-scatter,
+and barrier, including the final drain of outstanding sends. Completions reset
+the timer, so an operation that continues making progress may take longer than
+the configured duration. Empty polls check the clock every 1024 iterations.
+This is a failure-detection policy, not proof that a peer has died: a suspended
+or sufficiently slow peer can trigger it too.
+
+On timeout the operation raises an error, the mesh is marked unusable, and its
+queue pairs are closed before registered staging buffers can be reused. Do not
+retry the operation on that group or consume its partially written output.
+Restart the distributed job and initialize a fresh group on all ranks. With MLX,
+the CPU stream error is propagated when the result is evaluated/synchronized;
+the failed stream must not be reused either.
+
+This setting does **not** bound initial connection/side-channel setup or the
+JACCL ring topology. It does not promise recovery from a driver failure inside
+an RDMA API call.
+
 ### Device File Format
 
 The device file is a JSON array where each entry describes the RDMA devices

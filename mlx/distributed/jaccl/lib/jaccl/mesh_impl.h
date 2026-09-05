@@ -2,10 +2,12 @@
 
 #pragma once
 
+#include <exception>
 #include <memory>
 #include <span>
 
 #include "jaccl/rdma.h"
+#include "jaccl/timeout.h"
 
 constexpr int MESH_MAX_PEERS = 8;
 constexpr int MESH_PIPELINE = 2;
@@ -33,6 +35,7 @@ class MeshImpl {
 
   template <typename T, typename ReduceOp>
   void all_reduce(const T* in, T* out, int64_t size, ReduceOp reduce_op) {
+    Operation operation(*this, "all_reduce");
     // Fully connected all reduce with deterministic reduction order.
     //
     // We copy rank 0's data to the output buffer and then we reduce every
@@ -100,6 +103,7 @@ class MeshImpl {
       // receives.
       ibv_wc wc[WC_NUM];
       int n = poll(connections_, WC_NUM, wc);
+      operation.check_progress(n);
       for (int i = 0; i < n; i++) {
         int work_type = wc[i].wr_id >> 16;
         int buff = (wc[i].wr_id >> 8) & 0xff;
@@ -197,11 +201,13 @@ class MeshImpl {
     while (in_flight > 0) {
       ibv_wc wc[WC_NUM];
       int n = poll(connections_, WC_NUM, wc);
+      operation.check_progress(n);
       in_flight -= n;
     }
   }
 
   void all_gather(const char* in_ptr, char* out_ptr, int64_t n_bytes) {
+    Operation operation(*this, "all_gather");
     // Copy our data to the appropriate place. Skip when in place (the scatter
     // gather all reduce passes our own reduced shard which already lives at
     // out_ptr + rank_ * n_bytes).
@@ -245,6 +251,7 @@ class MeshImpl {
     while (in_flight > 0) {
       ibv_wc wc[WC_NUM];
       int n = poll(connections_, WC_NUM, wc);
+      operation.check_progress(n);
       for (int i = 0; i < n; i++) {
         int work_type = wc[i].wr_id >> 16;
         int buff = (wc[i].wr_id >> 8) & 0xff;
@@ -287,6 +294,7 @@ class MeshImpl {
 
   template <typename T, typename ReduceOp>
   void sum_scatter(const T* in, T* out, int64_t count, ReduceOp reduce_op) {
+    Operation operation(*this, "sum_scatter");
     // Fully connected reduce scatter.
     //
     // The input holds size_ contiguous chunks of `count` elements each. Every
@@ -345,6 +353,7 @@ class MeshImpl {
     while (in_flight > 0) {
       ibv_wc wc[WC_NUM];
       int n = poll(connections_, WC_NUM, wc);
+      operation.check_progress(n);
       for (int i = 0; i < n; i++) {
         int work_type = wc[i].wr_id >> 16;
         int buff = (wc[i].wr_id >> 8) & 0xff;
@@ -400,6 +409,7 @@ class MeshImpl {
       T* out,
       int64_t count,
       ReduceOp reduce_op) {
+    Operation operation(*this, "all_reduce_scatter_gather");
     // Bandwidth optimal all reduce for large messages: a reduce scatter
     // followed by an all gather. Compared to the fully connected all_reduce
     // (which sends every rank's whole input to every peer) this moves size_x
@@ -443,6 +453,7 @@ class MeshImpl {
   }
 
   void send(const char* in_ptr, int64_t n_bytes, int dst) {
+    Operation operation(*this, "send");
     constexpr int PIPELINE = 2;
     constexpr int WC_NUM = PIPELINE;
     auto [sz, N] = buffer_size_from_message(n_bytes);
@@ -472,6 +483,7 @@ class MeshImpl {
       // and send them.
       ibv_wc wc[WC_NUM];
       int n = connections_[dst].poll(WC_NUM, wc);
+      operation.check_progress(n);
       for (int i = 0; i < n; i++) {
         int buff = (wc[i].wr_id >> 8) & 0xff;
         int rank = wc[i].wr_id & 0xff;
@@ -493,6 +505,7 @@ class MeshImpl {
   }
 
   void recv(char* out_ptr, int64_t n_bytes, int src) {
+    Operation operation(*this, "recv");
     constexpr int PIPELINE = 2;
     constexpr int WC_NUM = PIPELINE;
     auto [sz, N] = buffer_size_from_message(n_bytes);
@@ -517,6 +530,7 @@ class MeshImpl {
       // data to fetch post another recv.
       ibv_wc wc[WC_NUM];
       int n = connections_[src].poll(WC_NUM, wc);
+      operation.check_progress(n);
       for (int i = 0; i < n; i++) {
         int buff = (wc[i].wr_id >> 8) & 0xff;
         int rank = wc[i].wr_id & 0xff;
@@ -540,6 +554,47 @@ class MeshImpl {
   }
 
  private:
+  class Operation {
+   public:
+    Operation(MeshImpl& mesh, const char* name)
+        : mesh_(mesh),
+          name_(name),
+          timeout_(mesh.timeout_),
+          exceptions_(std::uncaught_exceptions()) {
+      if (mesh_.failed_) {
+        throw std::runtime_error(
+            "[jaccl] Cannot reuse a failed mesh group; create a new group");
+      }
+    }
+
+    ~Operation() {
+      if (std::uncaught_exceptions() > exceptions_) {
+        mesh_.failed_ = true;
+        // WRs reference group-owned registered staging buffers, not caller
+        // arrays. Stop the QPs before those buffers can be reused or released.
+        for (auto& connection : mesh_.connections_) {
+          connection.close_queue_pair();
+        }
+      }
+    }
+
+    void check_progress(int completions) {
+      if (timeout_.expired(completions)) {
+        std::ostringstream message;
+        message << "[jaccl] Rank " << mesh_.rank_ << " timed out in " << name_
+                << " after " << mesh_.timeout_.count()
+                << " ms without RDMA completions; the mesh group is unusable";
+        throw std::runtime_error(message.str());
+      }
+    }
+
+   private:
+    MeshImpl& mesh_;
+    const char* name_;
+    detail::ProgressTimeout<> timeout_;
+    int exceptions_;
+  };
+
   void send_to(int sz, int rank, int buff) {
     connections_[rank].post_send(
         send_buffer(sz, buff), SEND_WR << 16 | buff << 8 | rank);
@@ -621,6 +676,8 @@ class MeshImpl {
     }
   }
 
+  std::chrono::milliseconds timeout_{detail::mesh_timeout()};
+  bool failed_{false};
   int rank_;
   int size_;
   std::span<Connection> connections_;

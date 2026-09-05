@@ -167,6 +167,7 @@ struct Connection {
   Connection& operator=(Connection&) = delete;
 
   ~Connection();
+  void close_queue_pair() noexcept;
   void allocate_protection_domain();
   void create_completion_queue(int num_entries);
   void create_queue_pair();
