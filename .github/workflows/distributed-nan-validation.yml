@@ -7,11 +7,7 @@ permissions:
   contents: read
 jobs:
   validate:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, macos-14]
-    runs-on: ${{ matrix.os }}
+    runs-on: macos-15
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -21,20 +17,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Configure compilers and build dependencies
-        shell: bash
+      - name: Configure compiler and build dependencies
         run: |
           set -euo pipefail
-          if [ "$RUNNER_OS" = Linux ]; then
-            sudo apt-get update -qq
-            sudo apt-get install -y libopenblas-dev liblapack-dev liblapacke-dev
-          else
-            sudo xcode-select -s /Applications/Xcode_16.2.app
-          fi
+          sudo xcode-select -s /Applications/Xcode_26.3.app
           python -m pip install cmake ninja pre-commit pyyaml
           c++ --version
       - name: Recover the reviewed regression and patch scripts
-        shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -50,7 +39,6 @@ jobs:
           paths = 'mlx/distributed/reduction_ops.h mlx/distributed/jaccl/lib/jaccl/reduction_ops.h tests/distributed_reduction_tests.cpp tests/CMakeLists.txt'
           fixed = fixed.replace('python /tmp/apply-nan-fix.py', 'python /tmp/apply-nan-fix.py\ngit add ' + paths)
           fixed = fixed.replace('pre-commit run --all-files', 'pre-commit run --files ' + paths)
-          # Preserve the failing command's output in the artifact, including build failures.
           for name, script in [('generate', generation), ('baseline', baseline), ('fixed', fixed)]:
               Path('/tmp/nan-' + name + '.sh').write_text('set -euo pipefail\n' + script)
           PY
@@ -58,25 +46,24 @@ jobs:
           mkdir -p results
           bash /tmp/nan-generate.sh
       - name: Prove the unpatched implementation fails
-        shell: bash
         run: |
           set -euo pipefail
           bash /tmp/nan-baseline.sh 2>&1 | tee results/baseline-build.log
       - name: Validate the fix and full C++ suite
-        shell: bash
         run: |
           set -euo pipefail
           bash /tmp/nan-fixed.sh 2>&1 | tee results/fixed-build.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: nan-reduction-${{ matrix.os }}
+          name: nan-reduction-macos-15
           path: results
   publish:
     needs: validate
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/checkout@v4
         with:
@@ -84,14 +71,22 @@ jobs:
           fetch-depth: 0
       - uses: actions/download-artifact@v4
         with:
-          pattern: nan-reduction-*
-          path: validation-results
+          name: nan-reduction-macos-15
+          path: validation-results/macos
+      - uses: actions/download-artifact@v4
+        with:
+          name: nan-reduction-ubuntu-24.04
+          run-id: 33936052022
+          github-token: ${{ github.token }}
+          path: validation-results/linux
       - name: Publish only the tested patch
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = b6368984b8e02a3fb3ee7986846c0fb85e1fccf7
-          cmp validation-results/nan-reduction-macos-14/fix.patch validation-results/nan-reduction-ubuntu-24.04/fix.patch
-          git apply --index validation-results/nan-reduction-macos-14/fix.patch
+          cmp validation-results/macos/fix.patch validation-results/linux/fix.patch
+          grep -q 'Status: SUCCESS' validation-results/linux/full-cpp-suite.log
+          grep -q 'Status: SUCCESS' validation-results/macos/full-cpp-suite.log
+          git apply --index validation-results/macos/fix.patch
           git diff --cached --check
           git config user.name 'Philip John Basile'
           git config user.email '1419847+PhilipJohnBasile@users.noreply.github.com'
