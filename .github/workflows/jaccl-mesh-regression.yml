@@ -1,0 +1,115 @@
+name: JACCL mesh regression
+on:
+  push:
+    branches: [test/jaccl-peer-loss-3910]
+    paths: [.github/workflows/jaccl-mesh-regression.yml]
+permissions:
+  contents: write
+jobs:
+  validate:
+    runs-on: macos-26
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.11'
+      - name: Prepare pinned before and after checkouts
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import base64, hashlib, os, pathlib, zlib
+          encoded = pathlib.Path('.github/jaccl-peer-loss.patch.b64').read_text()
+          patch = zlib.decompress(base64.b64decode(encoded))
+          assert hashlib.sha256(patch).hexdigest() == 'a8f4d471fe4eeb3485c23a8a19d9d58ccf00bb27d8612dec8377269ebbcfd5a3'
+          pathlib.Path(os.environ['RUNNER_TEMP'], 'jaccl.patch').write_bytes(patch)
+          PY
+          git worktree add --detach "$RUNNER_TEMP/before" b6368984b8e02a3fb3ee7986846c0fb85e1fccf7
+          git worktree add --detach "$RUNNER_TEMP/after" b6368984b8e02a3fb3ee7986846c0fb85e1fccf7
+          cd "$RUNNER_TEMP/after"
+          git apply --check "$RUNNER_TEMP/jaccl.patch"
+          git apply "$RUNNER_TEMP/jaccl.patch"
+          git add mlx/distributed/jaccl/lib
+          git diff --cached --check
+          mkdir -p "$RUNNER_TEMP/results"
+          sw_vers | tee "$RUNNER_TEMP/results/platform.txt"
+          xcodebuild -version | tee -a "$RUNNER_TEMP/results/platform.txt"
+          xcrun --sdk macosx --show-sdk-version | tee -a "$RUNNER_TEMP/results/platform.txt"
+      - name: Check and apply project formatting
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet pre-commit
+          cd "$RUNNER_TEMP/after"
+          git diff --cached --name-only > "$RUNNER_TEMP/changed.txt"
+          pre-commit run --files $(cat "$RUNNER_TEMP/changed.txt") || pre-commit run --files $(cat "$RUNNER_TEMP/changed.txt")
+          git add mlx/distributed/jaccl/lib
+          git diff --cached --check
+      - name: Reproduce baseline hang with the real mesh implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          LIB=mlx/distributed/jaccl/lib
+          xcrun clang++ -std=c++20 -O2 -I "$RUNNER_TEMP/before/$LIB" "$RUNNER_TEMP/after/$LIB/tests/mesh_timeout_tests.cpp" "$RUNNER_TEMP/before/$LIB/jaccl/rdma.cpp" "$RUNNER_TEMP/before/$LIB/jaccl/tcp.cpp" -o "$RUNNER_TEMP/baseline"
+          python - <<'PY'
+          import json, os, pathlib, subprocess
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          binary = str(root / 'baseline')
+          controls = ['healthy', 'empty', 'single_rank', 'delayed']
+          for case in controls:
+              subprocess.run([binary, case], check=True, timeout=5)
+          try:
+              result = subprocess.run([binary, 'recv'], capture_output=True, text=True, timeout=2)
+          except subprocess.TimeoutExpired:
+              print('EXPECTED BASELINE FAILURE: MeshImpl::recv never returned with a silent completion queue')
+          else:
+              raise RuntimeError(f'Baseline failed to reproduce the hang: {result.returncode}: {result.stdout} {result.stderr}')
+          (root/'results'/'baseline.json').write_text(json.dumps({'base_sha':'b6368984b8e02a3fb3ee7986846c0fb85e1fccf7','controls_passed':controls,'silent_recv':'timed out at 2 second process guard','provider':'mock verbs, real MeshImpl/Connection/SharedBuffer'}, indent=2))
+          PY
+      - name: Build full standalone JACCL and run regression cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake -S "$RUNNER_TEMP/after/mlx/distributed/jaccl/lib" -B "$RUNNER_TEMP/build" -DJACCL_BUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_DEPLOYMENT_TARGET=26.2
+          cmake --build "$RUNNER_TEMP/build" -j 4
+          ctest --test-dir "$RUNNER_TEMP/build" --output-on-failure | tee "$RUNNER_TEMP/results/ctest.txt"
+          test -x "$RUNNER_TEMP/build/jaccl_mesh_timeout_tests"
+      - name: Address and undefined-behavior sanitizer validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          LIB="$RUNNER_TEMP/after/mlx/distributed/jaccl/lib"
+          xcrun clang++ -std=c++20 -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -I "$LIB" "$LIB/tests/mesh_timeout_tests.cpp" "$LIB/jaccl/rdma.cpp" "$LIB/jaccl/tcp.cpp" -o "$RUNNER_TEMP/sanitized"
+          export ASAN_OPTIONS=detect_leaks=0:halt_on_error=1
+          export UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1
+          python - <<'PY'
+          import os, pathlib, subprocess
+          root = pathlib.Path(os.environ['RUNNER_TEMP'])
+          cases = ['recv','send','all_reduce','all_gather','sum_scatter','scatter_gather','drain','post_error','healthy','empty','single_rank','delayed']
+          lines = []
+          for case in cases:
+              result = subprocess.run([str(root/'sanitized'),case], check=True, capture_output=True, text=True, timeout=5)
+              print(result.stdout, end='')
+              lines.append(result.stdout)
+          (root/'results'/'sanitizers.txt').write_text(''.join(lines))
+          PY
+      - name: Publish validated feature branch without changing main
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/after"
+          git diff --cached --check
+          git diff --cached --stat | tee "$RUNNER_TEMP/results/diff-stat.txt"
+          git diff --cached --binary > "$RUNNER_TEMP/results/jaccl-3910.patch"
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'fix(distributed): bound JACCL mesh waits after peer loss'
+          git push origin HEAD:refs/heads/fix/jaccl-mesh-peer-loss-3910
+          git rev-parse HEAD | tee "$RUNNER_TEMP/results/head-sha.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: jaccl-peer-loss-results
+          path: ${{ runner.temp }}/results
+          retention-days: 7
