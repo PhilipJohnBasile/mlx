@@ -16,295 +16,57 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: b6368984b8e02a3fb3ee7986846c0fb85e1fccf7
+          ref: 964d53ffa52242f33800f3a956684176c5962bed
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Install build dependencies
+      - name: Configure compilers and build dependencies
         shell: bash
         run: |
+          set -euo pipefail
           if [ "$RUNNER_OS" = Linux ]; then
             sudo apt-get update -qq
-            sudo apt-get install -y libopenblas-dev liblapack-dev
+            sudo apt-get install -y libopenblas-dev liblapack-dev liblapacke-dev
+          else
+            sudo xcode-select -s /Applications/Xcode_16.2.app
           fi
-          python -m pip install cmake ninja pre-commit
-      - name: Add regression tests without changing the implementation
+          python -m pip install cmake ninja pre-commit pyyaml
+          c++ --version
+      - name: Recover the reviewed regression and patch scripts
         shell: bash
         run: |
-          cat > tests/distributed_reduction_tests.cpp <<'CPP'
-          // Copyright © 2026 Apple Inc.
-
-          #include <algorithm>
-          #include <array>
-          #include <cmath>
-          #include <limits>
-          #include <type_traits>
-          #include <vector>
-
-          #include "doctest/doctest.h"
-          #include "mlx/mlx.h"
-          #include "mlx/distributed/reduction_ops.h"
-          #include "jaccl/group.h"
-          #include "jaccl/reduction_ops.h"
-
-          namespace {
-
-          template <typename T, typename Combine>
-          void check_nan_reduction(Combine combine, bool maximum) {
-            const float nan = std::numeric_limits<float>::quiet_NaN();
-            const float inf = std::numeric_limits<float>::infinity();
-            const std::array<std::array<float, 2>, 9> pairs = {{
-                {nan, 5}, {5, nan}, {nan, nan}, {1, 5}, {-2, -7},
-                {inf, -inf}, {0, -0.0f}, {2, 2}, {-inf, -3}}};
-            // Include scalar, vector-width boundaries and a non-vector tail.
-            for (size_t n : {0, 1, 3, 4, 5, 31, 32, 33, 257}) {
-              CAPTURE(n);
-              std::vector<T> a(n, T(0.0f));
-              std::vector<T> b(n, T(0.0f));
-              std::vector<T> output(n + 2, T(123.0f));
-              for (size_t i = 0; i < n; ++i) {
-                a[i] = T(pairs[i % pairs.size()][0]);
-                b[i] = T(pairs[i % pairs.size()][1]);
-              }
-              combine(a.data(), b.data(), output.data() + 1, n);
-              CHECK(static_cast<double>(output.front()) == 123.0);
-              CHECK(static_cast<double>(output.back()) == 123.0);
-              for (size_t i = 0; i < n; ++i) {
-                const auto x = static_cast<double>(a[i]);
-                const auto y = static_cast<double>(b[i]);
-                const auto actual = static_cast<double>(output[i + 1]);
-                if (std::isnan(x) || std::isnan(y)) {
-                  CHECK(std::isnan(actual));
-                } else {
-                  CHECK(actual == (maximum ? std::max(x, y) : std::min(x, y)));
-                }
-              }
-            }
-            // All rank orderings of the reported 1, NaN, 3, 4 failure.
-            std::array<int, 4> order = {0, 1, 2, 3};
-            const std::array<float, 4> values = {1, nan, 3, 4};
-            do {
-              T result(values[order[0]]);
-              for (size_t i = 1; i < order.size(); ++i) {
-                const T left = result;
-                const T right(values[order[i]]);
-                combine(&left, &right, &result, 1);
-              }
-              CHECK(std::isnan(static_cast<double>(result)));
-              T first(0.0f), second(0.0f), result_tree(0.0f);
-              const T a(values[order[0]]), b(values[order[1]]);
-              const T c(values[order[2]]), d(values[order[3]]);
-              combine(&a, &b, &first, 1);
-              combine(&c, &d, &second, 1);
-              combine(&first, &second, &result_tree, 1);
-              CHECK(std::isnan(static_cast<double>(result_tree)));
-            } while (std::next_permutation(order.begin(), order.end()));
-          }
-
-          template <typename T, typename Op>
-          void check_in_place(Op op, bool maximum) {
-            check_nan_reduction<T>(
-                [op](const T* a, const T* b, T* out, size_t n) {
-                  if (n != 0) {
-                    std::copy(a, a + n, out);
-                  }
-                  op(b, out, n);
-                }, maximum);
-          }
-
-          template <typename T>
-          void check_jaccl() {
-            check_in_place<T>(jaccl::MinOp<T>{}, false);
-            check_in_place<T>(jaccl::MaxOp<T>{}, true);
-            check_nan_reduction<T>(jaccl::MinOp<T>{}, false);
-            check_nan_reduction<T>(jaccl::MaxOp<T>{}, true);
-          }
-
-          template <typename T, typename Min, typename Max>
-          void check_integer_reduction(Min minimum, Max maximum) {
-            const T lo = std::numeric_limits<T>::lowest();
-            const T hi = std::numeric_limits<T>::max();
-            const std::array<T, 4> a = {lo, hi, T(0), T(1)};
-            const std::array<T, 4> b = {hi, lo, T(1), T(0)};
-            auto out = a;
-            minimum(b.data(), out.data(), out.size());
-            for (size_t i = 0; i < out.size(); ++i) {
-              CHECK(out[i] == std::min(a[i], b[i]));
-            }
-            out = a;
-            maximum(b.data(), out.data(), out.size());
-            for (size_t i = 0; i < out.size(); ++i) {
-              CHECK(out[i] == std::max(a[i], b[i]));
-            }
-          }
-
-          } // namespace
-
-          TEST_CASE_TEMPLATE("distributed native min/max propagate NaN", T,
-              float, double, mlx::core::float16_t, mlx::core::bfloat16_t) {
-            check_in_place<T>(mlx::core::distributed::detail::MinOp<T>{}, false);
-            check_in_place<T>(mlx::core::distributed::detail::MaxOp<T>{}, true);
-          }
-
-          TEST_CASE_TEMPLATE("distributed jaccl min/max propagate NaN", T,
-              float, double, jaccl::bfloat16_t) {
-            check_jaccl<T>();
-          }
-
-          TEST_CASE("distributed jaccl float16 min/max propagate NaN") {
-            jaccl::dispatch_all_types(jaccl::Float16, [](auto tag) {
-              using T = typename decltype(tag)::type;
-              if constexpr (!std::is_integral_v<T> &&
-                  !std::is_same_v<T, jaccl::complex64_t>) {
-                check_jaccl<T>();
-              }
-            });
-          }
-
-          #if defined(__aarch64__)
-          TEST_CASE("distributed jaccl native bf16 min/max propagate NaN" *
-              doctest::skip(!jaccl::has_native_bf16_support())) {
-            using T = jaccl::bfloat16_t;
-            check_in_place<T>([](const T* in, T* out, size_t n) {
-              jaccl::native_bf16_min(in, out, n);
-            }, false);
-            check_in_place<T>([](const T* in, T* out, size_t n) {
-              jaccl::native_bf16_max(in, out, n);
-            }, true);
-            check_nan_reduction<T>([](const T* a, const T* b, T* out, size_t n) {
-              jaccl::native_bf16_min(a, b, out, n);
-            }, false);
-            check_nan_reduction<T>([](const T* a, const T* b, T* out, size_t n) {
-              jaccl::native_bf16_max(a, b, out, n);
-            }, true);
-          }
-          #endif
-
-          TEST_CASE_TEMPLATE("distributed native min/max preserve integers", T,
-              bool, int8_t, uint8_t, int16_t, uint16_t, int32_t, uint32_t,
-              int64_t, uint64_t) {
-            check_integer_reduction<T>(
-                mlx::core::distributed::detail::MinOp<T>{},
-                mlx::core::distributed::detail::MaxOp<T>{});
-            check_integer_reduction<T>(jaccl::MinOp<T>{}, jaccl::MaxOp<T>{});
-          }
-          CPP
+          set -euo pipefail
           python - <<'PY'
           from pathlib import Path
-          p = Path('tests/CMakeLists.txt')
-          s = p.read_text()
-          anchor = '          device_tests.cpp\n'
-          assert s.count(anchor) == 1
-          s = s.replace(anchor, anchor + '          distributed_reduction_tests.cpp\n')
-          anchor = 'target_link_libraries(tests PRIVATE mlx doctest)'
-          assert s.count(anchor) == 1
-          s = s.replace(anchor, 'target_include_directories(\n  tests PRIVATE ${PROJECT_SOURCE_DIR}/mlx/distributed/jaccl/lib)\n\n' + anchor)
-          p.write_text(s)
+          import yaml
+          source = yaml.safe_load(Path('.github/workflows/distributed-nan-validation.yml').read_text())
+          steps = {s['name']: s['run'] for s in source['jobs']['validate']['steps'] if 'run' in s}
+          generation = steps['Add regression tests without changing the implementation']
+          baseline = steps['Build baseline and prove regression tests fail']
+          fixed = steps['Apply root cause fix and validate']
+          baseline = baseline.replace('-std=c++17', '-std=c++20')
+          fixed = fixed.replace('-std=c++17', '-std=c++20')
+          paths = 'mlx/distributed/reduction_ops.h mlx/distributed/jaccl/lib/jaccl/reduction_ops.h tests/distributed_reduction_tests.cpp tests/CMakeLists.txt'
+          fixed = fixed.replace('python /tmp/apply-nan-fix.py', 'python /tmp/apply-nan-fix.py\ngit add ' + paths)
+          fixed = fixed.replace('pre-commit run --all-files', 'pre-commit run --files ' + paths)
+          # Preserve the failing command's output in the artifact, including build failures.
+          for name, script in [('generate', generation), ('baseline', baseline), ('fixed', fixed)]:
+              Path('/tmp/nan-' + name + '.sh').write_text('set -euo pipefail\n' + script)
           PY
-          cat > /tmp/apply-nan-fix.py <<'PY'
-          from pathlib import Path
-          p = Path('mlx/distributed/reduction_ops.h')
-          s = p.read_text()
-          for name, symbol in [('max', '<'), ('min', '>')]:
-              old = f'*output = std::{name}(*output, *input);'
-              new = f'*output = (*input != *input || *output {symbol} *input) ? *input : *output;'
-              assert s.count(old) == 1, old
-              s = s.replace(old, new)
-          s = s.replace('template <typename T>\nstruct MaxOp', '// Preserve NaNs from either operand so reduction order cannot drop them.\ntemplate <typename T>\nstruct MaxOp', 1)
-          p.write_text(s)
-          p = Path('mlx/distributed/jaccl/lib/jaccl/reduction_ops.h')
-          s = p.read_text()
-          for left, right, count in [('output[i]', 'input[i]', 2), ('a[i]', 'b[i]', 2), ('out[i]', 'in[i]', 1), ('pa[i]', 'pb[i]', 1)]:
-              for symbol in ('<', '>'):
-                  old = f'({left} {symbol} {right}) ? {left} : {right}'
-                  new = f'({left} != {left} || {left} {symbol} {right}) ? {left} : {right}'
-                  assert s.count(old) == count, (old, s.count(old))
-                  s = s.replace(old, new)
-          s = s.replace('template <typename T>\nstruct MaxOp', '// Preserve NaNs from either operand in every reduction path, including BF16.\ntemplate <typename T>\nstruct MaxOp', 1)
-          p.write_text(s)
-          PY
-          cat > /tmp/distributed-minmax-bench.cpp <<'CPP'
-          #include <algorithm>
-          #include <chrono>
-          #include <cstdio>
-          #include <vector>
-          #include "mlx/mlx.h"
-          #include "mlx/distributed/reduction_ops.h"
-          #include "jaccl/group.h"
-          #include "jaccl/reduction_ops.h"
-          template <typename T, typename Op>
-          __attribute__((noinline)) void apply(const T* a, T* b, size_t n) {
-            Op{}(a, b, n);
-          }
-          template <typename T, typename Op>
-          void bench(const char* name) {
-            for (size_t n : {1, 16, 4096, 1048576}) {
-              std::vector<T> a(n, T(0.0f)), b(n, T(0.0f));
-              for (size_t i = 0; i < n; ++i) {
-                a[i] = T(float(int(i % 251) - 125));
-                b[i] = T(float(int(i % 127) - 63));
-              }
-              int iterations = std::min<size_t>(1000000, std::max<size_t>(32, 32000000 / n));
-              std::vector<double> samples;
-              for (int run = 0; run < 5; ++run) {
-                auto start = std::chrono::steady_clock::now();
-                for (int k = 0; k < iterations; ++k) apply<T, Op>(a.data(), b.data(), n);
-                auto end = std::chrono::steady_clock::now();
-                samples.push_back(std::chrono::duration<double, std::nano>(end-start).count() / (iterations * double(n)));
-              }
-              std::sort(samples.begin(), samples.end());
-              std::printf("%s,%zu,%.6f,%.3f\n", name, n, samples[2], double(b.back()));
-            }
-          }
-          int main() {
-            using namespace mlx::core::distributed::detail;
-            std::puts("op,elements,median_ns_per_element,checksum");
-            bench<float, MinOp<float>>("ring-min-f32");
-            bench<float, MaxOp<float>>("ring-max-f32");
-            bench<float, jaccl::MinOp<float>>("jaccl-min-f32");
-            bench<float, jaccl::MaxOp<float>>("jaccl-max-f32");
-            bench<mlx::core::bfloat16_t, MinOp<mlx::core::bfloat16_t>>("ring-min-bf16");
-            bench<mlx::core::bfloat16_t, MaxOp<mlx::core::bfloat16_t>>("ring-max-bf16");
-            bench<jaccl::bfloat16_t, jaccl::MinOp<jaccl::bfloat16_t>>("jaccl-min-bf16");
-            bench<jaccl::bfloat16_t, jaccl::MaxOp<jaccl::bfloat16_t>>("jaccl-max-bf16");
-          }
-          CPP
-      - name: Build baseline and prove regression tests fail
-        shell: bash
-        run: |
-          set -euo pipefail
+          git checkout --detach b6368984b8e02a3fb3ee7986846c0fb85e1fccf7
           mkdir -p results
-          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DMLX_BUILD_METAL=OFF -DMLX_BUILD_CUDA=OFF -DMLX_BUILD_TESTS=ON -DMLX_BUILD_EXAMPLES=OFF
-          cmake --build build --target tests -j 3
-          c++ -O3 -std=c++17 -I . -I build -I mlx/distributed/jaccl/lib /tmp/distributed-minmax-bench.cpp -o /tmp/bench-before
-          /tmp/bench-before > results/benchmark-before.csv
-          set +e
-          build/tests/tests --test-case='distributed *min/max*' --no-colors > results/baseline-regression.log 2>&1
-          result=$?
-          set -e
-          tail -n 8 results/baseline-regression.log
-          test "$result" -eq 1
-          grep -q 'FAILED' results/baseline-regression.log
-      - name: Apply root cause fix and validate
+          bash /tmp/nan-generate.sh
+      - name: Prove the unpatched implementation fails
         shell: bash
         run: |
           set -euo pipefail
-          python /tmp/apply-nan-fix.py
-          pre-commit run --all-files > results/format-first.log 2>&1 || true
-          pre-commit run --all-files > results/format.log 2>&1
-          cmake --build build --target tests -j 3
-          build/tests/tests --test-case='distributed *min/max*' --no-colors | tee results/fixed-regression.log
-          build/tests/tests --no-colors | tee results/full-cpp-suite.log
-          c++ -O3 -std=c++17 -I . -I build -I mlx/distributed/jaccl/lib /tmp/distributed-minmax-bench.cpp -o /tmp/bench-after
-          /tmp/bench-after > results/benchmark-after.csv
-          cp /tmp/distributed-minmax-bench.cpp results/
-          git add mlx/distributed/reduction_ops.h mlx/distributed/jaccl/lib/jaccl/reduction_ops.h tests/distributed_reduction_tests.cpp tests/CMakeLists.txt
-          git diff --cached --check
-          test -z "$(git diff --name-only)"
-          git diff --cached --binary > results/fix.patch
-          git diff --cached --stat | tee results/diff-stat.txt
-          c++ --version > results/compiler.txt
-          uname -a > results/platform.txt
+          bash /tmp/nan-baseline.sh 2>&1 | tee results/baseline-build.log
+      - name: Validate the fix and full C++ suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash /tmp/nan-fixed.sh 2>&1 | tee results/fixed-build.log
       - uses: actions/upload-artifact@v4
         if: always()
         with:
