@@ -30,13 +30,14 @@ struct SumOp {
   }
 };
 
-// Preserve NaNs from either operand in every reduction path, including BF16.
+// Propagate NaNs from either operand; bitwise OR keeps selection vectorizable.
 template <typename T>
 struct MaxOp {
   void operator()(const T* input, T* output, size_t N) const {
     for (size_t i = 0; i < N; i++) {
-      output[i] = (output[i] != output[i] || output[i] > input[i]) ? output[i]
-                                                                   : input[i];
+      output[i] = ((output[i] != output[i]) | (output[i] > input[i]))
+          ? output[i]
+          : input[i];
     }
   }
   void operator()(
@@ -45,7 +46,7 @@ struct MaxOp {
       T* __restrict output,
       size_t N) const {
     for (size_t i = 0; i < N; i++) {
-      output[i] = (a[i] != a[i] || a[i] > b[i]) ? a[i] : b[i];
+      output[i] = ((a[i] != a[i]) | (a[i] > b[i])) ? a[i] : b[i];
     }
   }
 };
@@ -54,8 +55,9 @@ template <typename T>
 struct MinOp {
   void operator()(const T* input, T* output, size_t N) const {
     for (size_t i = 0; i < N; i++) {
-      output[i] = (output[i] != output[i] || output[i] < input[i]) ? output[i]
-                                                                   : input[i];
+      output[i] = ((output[i] != output[i]) | (output[i] < input[i]))
+          ? output[i]
+          : input[i];
     }
   }
   void operator()(
@@ -64,7 +66,7 @@ struct MinOp {
       T* __restrict output,
       size_t N) const {
     for (size_t i = 0; i < N; i++) {
-      output[i] = (a[i] != a[i] || a[i] < b[i]) ? a[i] : b[i];
+      output[i] = ((a[i] != a[i]) | (a[i] < b[i])) ? a[i] : b[i];
     }
   }
 };
@@ -94,7 +96,7 @@ native_bf16_max(const void* input, void* output, size_t N) {
   auto in = reinterpret_cast<const __bf16*>(input);
   auto out = reinterpret_cast<__bf16*>(output);
   for (size_t i = 0; i < N; i++) {
-    out[i] = (out[i] != out[i] || out[i] > in[i]) ? out[i] : in[i];
+    out[i] = ((out[i] != out[i]) | (out[i] > in[i])) ? out[i] : in[i];
   }
 }
 
@@ -103,7 +105,7 @@ native_bf16_min(const void* input, void* output, size_t N) {
   auto in = reinterpret_cast<const __bf16*>(input);
   auto out = reinterpret_cast<__bf16*>(output);
   for (size_t i = 0; i < N; i++) {
-    out[i] = (out[i] != out[i] || out[i] < in[i]) ? out[i] : in[i];
+    out[i] = ((out[i] != out[i]) | (out[i] < in[i])) ? out[i] : in[i];
   }
 }
 
@@ -123,7 +125,7 @@ native_bf16_max(const void* a, const void* b, void* output, size_t N) {
   auto pb = reinterpret_cast<const __bf16* __restrict>(b);
   auto out = reinterpret_cast<__bf16* __restrict>(output);
   for (size_t i = 0; i < N; i++) {
-    out[i] = (pa[i] != pa[i] || pa[i] > pb[i]) ? pa[i] : pb[i];
+    out[i] = ((pa[i] != pa[i]) | (pa[i] > pb[i])) ? pa[i] : pb[i];
   }
 }
 
@@ -133,7 +135,7 @@ native_bf16_min(const void* a, const void* b, void* output, size_t N) {
   auto pb = reinterpret_cast<const __bf16* __restrict>(b);
   auto out = reinterpret_cast<__bf16* __restrict>(output);
   for (size_t i = 0; i < N; i++) {
-    out[i] = (pa[i] != pa[i] || pa[i] < pb[i]) ? pa[i] : pb[i];
+    out[i] = ((pa[i] != pa[i]) | (pa[i] < pb[i])) ? pa[i] : pb[i];
   }
 }
 
@@ -170,8 +172,9 @@ struct MaxOp<bfloat16_t> {
       native_bf16_max(input, output, N);
     } else {
       for (size_t i = 0; i < N; i++) {
-        output[i] = (output[i] != output[i] || output[i] > input[i]) ? output[i]
-                                                                     : input[i];
+        output[i] = ((output[i] != output[i]) | (output[i] > input[i]))
+            ? output[i]
+            : input[i];
       }
     }
   }
@@ -184,7 +187,7 @@ struct MaxOp<bfloat16_t> {
       native_bf16_max(a, b, output, N);
     } else {
       for (size_t i = 0; i < N; i++) {
-        output[i] = (a[i] != a[i] || a[i] > b[i]) ? a[i] : b[i];
+        output[i] = ((a[i] != a[i]) | (a[i] > b[i])) ? a[i] : b[i];
       }
     }
   }
@@ -197,8 +200,9 @@ struct MinOp<bfloat16_t> {
       native_bf16_min(input, output, N);
     } else {
       for (size_t i = 0; i < N; i++) {
-        output[i] = (output[i] != output[i] || output[i] < input[i]) ? output[i]
-                                                                     : input[i];
+        output[i] = ((output[i] != output[i]) | (output[i] < input[i]))
+            ? output[i]
+            : input[i];
       }
     }
   }
@@ -211,7 +215,7 @@ struct MinOp<bfloat16_t> {
       native_bf16_min(a, b, output, N);
     } else {
       for (size_t i = 0; i < N; i++) {
-        output[i] = (a[i] != a[i] || a[i] < b[i]) ? a[i] : b[i];
+        output[i] = ((a[i] != a[i]) | (a[i] < b[i])) ? a[i] : b[i];
       }
     }
   }
