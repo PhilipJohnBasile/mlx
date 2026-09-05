@@ -32,6 +32,15 @@ jobs:
           cd "$RUNNER_TEMP/after"
           git apply --check "$RUNNER_TEMP/jaccl.patch"
           git apply "$RUNNER_TEMP/jaccl.patch"
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('mlx/distributed/jaccl/lib/tests/timeout_tests.cpp')
+          text = path.read_text()
+          old = 'Timer large(std::chrono::milliseconds(std::numeric_limits<int64_t>::max()));'
+          new = 'Timer large{std::chrono::milliseconds{std::numeric_limits<int64_t>::max()}};'
+          assert text.count(old) == 1
+          path.write_text(text.replace(old, new))
+          PY
           git add mlx/distributed/jaccl/lib
           git diff --cached --check
           mkdir -p "$RUNNER_TEMP/results"
@@ -48,6 +57,7 @@ jobs:
           pre-commit run --files $(cat "$RUNNER_TEMP/changed.txt") || pre-commit run --files $(cat "$RUNNER_TEMP/changed.txt")
           git add mlx/distributed/jaccl/lib
           git diff --cached --check
+          git diff --cached --binary > "$RUNNER_TEMP/results/jaccl-3910.patch"
       - name: Reproduce baseline hang with the real mesh implementation
         shell: bash
         run: |
